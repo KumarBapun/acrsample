@@ -1,0 +1,91 @@
+trigger: none
+
+schedules:
+- cron: "0 0 * * *"
+  displayName: Daily MARS
+  branches:
+    include:
+    - master
+  always: true
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+container: 
+  image: 'sjultra/node:devops'
+
+variables:
+- group: 'MARS Secrets'
+
+steps:
+- task: DownloadSecureFile@1
+  name: secretConfig
+  displayName: 'Download Customer Credentials'
+  inputs:
+    secureFile: $(GET_DEVOPS_CONFIG)
+  continueOnError: true
+
+- task: DownloadSecureFile@1
+  name: gcpSecretVZXY
+  displayName: 'Download CONTROL - GCP Credentials'
+  inputs:
+    secureFile: credentials_vzxy.json
+  continueOnError: true
+
+- task: DownloadSecureFile@1
+  name: gcpSecret
+  displayName: 'Download GCP Credentials'
+  inputs:
+    secureFile: gcp_secrets.json
+  continueOnError: true
+
+- script: |
+    set -xe
+    if [[ "$(secretConfig.secureFilePath)" != "" ]]; then
+        echo "INFO: Download secret config from DevOps File Storage"
+        cp $(secretConfig.secureFilePath) /tmp/credentials.json
+    elif [[ "${MARS_CONFIG_URL}" != "" ]]; then
+        echo "INFO: Download secret config from Azure Blob Storage"
+        curl "${MARS_CONFIG_URL}" -o /tmp/credentials.json
+    else
+        echo "ERROR: Cannot find secret config"
+        exit 1
+    fi
+    if [[ "$(gcpSecret.secureFilePath)" != "" ]]; then
+        cp $(gcpSecret.secureFilePath) /tmp/gcp_secrets.json
+    fi
+    
+    # Get control SA
+     if [[ "$(gcpSecretVZXY.secureFilePath)" != "" ]]; then
+        cp $(gcpSecretVZXY.secureFilePath) /tmp/credentials_vzxy.json
+    fi
+    cat /tmp/credentials.json
+    
+    mkdir /tmp/mars-output
+    mkdir /tmp/mars-output/CSV
+    mkdir /tmp/mars-output/JSON
+    mkdir /tmp/mars-output/XLSX
+    git config --global user.email "pipeline@vzxy.net"
+    git config --global user.name "pipeline"
+    # This install procedure come from here: https://stackoverflow.com/questions/48734119/git-lfs-is-not-a-git-command-unclear/48734334
+    curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | sudo bash
+    sudo apt-get install git-lfs -y
+    git lfs install
+    npm i
+  env:
+    MARS_CONFIG_URL: $(MARS-CONFIG-URL)
+  displayName: 'Prepare Environment'
+
+- script: |
+    node main.js -c /tmp/credentials.json
+    echo "Output:"
+    ls /tmp/mars-output
+    cp -r /tmp/mars-output/* $(Build.ArtifactStagingDirectory)
+  displayName: 'Fetch Data'
+
+- task: PublishBuildArtifacts@1
+  displayName: "Publish data"
+  inputs:
+    pathToPublish: '$(Build.ArtifactStagingDirectory)'
+    artifactName: "artifacts"
+    publishLocation: "Container"
